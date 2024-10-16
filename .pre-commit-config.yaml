@@ -1,0 +1,65 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v3.2.0
+    hooks:
+      - id: trailing-whitespace # Trailing whitespace checker
+      - id: end-of-file-fixer # End-of-file newline checker
+      - id: check-yaml # YAML syntax checker
+      - id: check-ast # Python AST checker
+      - id: check-json # JSON syntax checker
+      - id: check-xml # XML syntax checker
+
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+  - repo: https://github.com/pycqa/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        additional_dependencies:
+          # source: https://github.com/DmytroLitvinov/awesome-flake8-extensions
+          # all-in-one plugins
+          - flake8-bugbear # tries to find bugs in your code
+          - flake8-simplify # encourages simplification of complex expressions
+
+          # clean code
+          - flake8-comprehensions # helps you write better list/set/dict comprehensions
+          - flake8-picky-parentheses # checks for redundant parentheses and alignment of parentheses and brackets
+          - flake8-return # plugin that checks return values
+          - flake8-annotations # enforces type annotations
+
+          # naming
+          - flake8-builtins # checks for python builtins being used as variables or parameters
+          - flake8-variables-names # checks for good variable names
+          - pep8-naming # enforces PEP 8 naming conventions
+
+          # complexity
+          - flake8-cognitive-complexity # plugin that checks for high cognitive complexity
+          - flake8-annotations-complexity # enforces complexity limits for function annotations
+
+          # docstrings
+          - flake8-spellcheck # checks spelling
+          - flake8-docstrings # docstring conventions
+
+          # Comments
+          - flake8-eradicate # enforces the removal of commented out code
+
+          # Annotations
+          - flake8-black # enforces black formatting
+        args:
+          [
+            "--max-line-length",
+            "120",
+            "--extend-ignore",
+            "D100, SC200, SC100, VNE001, N803, ANN101, ANN003, N806, E203",
+            "--exclude",
+            "__init__.py, test_*.py",
+            "--max-cognitive-complexity",
+            "70",
+          ]
