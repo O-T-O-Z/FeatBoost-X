@@ -305,7 +305,7 @@ class FeatBoostEstimator(BaseEstimator, ABC):
             number of resets performed.
         """
         # Condition 1 -> Maximum number of features reached.
-        if self.i > self.max_number_of_features:
+        if self.i >= self.max_number_of_features:
             self.logger.debug(
                 "Selection stopped: Maximum number of iteration %02d has been reached."
                 % self.max_number_of_features

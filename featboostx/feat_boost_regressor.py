@@ -4,7 +4,7 @@ from typing import Any, List, Tuple
 import numpy as np
 from lifelines.utils import concordance_index
 from sklearn.base import BaseEstimator
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_error
 
 from featboostx import FeatBoostEstimator
 
@@ -17,7 +17,7 @@ class FeatBoostRegressor(FeatBoostEstimator):
         base_estimator: BaseEstimator,
         loss: str = "adaptive",
         metric: str = "c_index",
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Create a new FeatBoostRegressor.
@@ -48,7 +48,7 @@ class FeatBoostRegressor(FeatBoostEstimator):
         :return: metric score.
         """
         if self.metric == "mae":
-            return mean_squared_error(y_test, y_pred)
+            return mean_absolute_error(y_test, y_pred)
         if self.metric == "c_index":
             return self.c_index(y_test, y_pred)
         raise NotImplementedError
@@ -83,18 +83,29 @@ class FeatBoostRegressor(FeatBoostEstimator):
             shape = True
         abs_errors = np.abs(Y - y_pred)
 
+        # minmax the target
+        min_val = np.quantile(Y, 0.01)
+        max_val = np.quantile(Y, 0.99)
+        Y = (Y - min_val) / (max_val - min_val)
+
+        # minmax the predictions
+        y_pred = (y_pred - min_val) / (max_val - min_val)
+
+        # calculate the absolute errors
+        abs_errors = np.abs(Y - y_pred)
+
+        # sigmoid
+        def sigmoid(x):
+            return 2 * (1 / (1 + np.exp(-x)))
+
         abs_errors_with_index = {
-            k: np.log(v[0] if shape else v)
+            k: sigmoid(v[0]) if shape else sigmoid(v)
             for k, v in sorted(
                 enumerate(abs_errors), key=lambda item: item[1], reverse=True
             )
         }
 
-        self._alpha_abs[:, self.i] = [
-            abs_errors_with_index[i] if abs_errors_with_index[i] > 1 else 1
-            for i in range(len(Y))
-        ]
-
+        self._alpha_abs[:, self.i] = [abs_errors_with_index[i] for i in range(len(Y))]
         self._alpha[:, self.i] = (
             self._alpha_abs[:, self.i] / self._alpha_abs[:, self.i - 1]
         )
