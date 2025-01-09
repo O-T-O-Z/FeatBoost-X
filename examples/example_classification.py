@@ -23,7 +23,7 @@ clf = FeatBoostClassifier(
     XGBClassifier(),
     loss="softmax",
     verbose=0,
-    siso_ranking_size=10,
+    siso_ranking_size=100,
     max_number_of_features=2,
 )
 clf.fit(X_train, y_train)

@@ -13,7 +13,7 @@ import shap
 from shap.plots._force import AdditiveExplanation, convert_to_link, ensure_not_numpy
 from shap.utils._legacy import DenseData, Instance, Model
 from sklearn.base import BaseEstimator
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, KFold
 
 logging.basicConfig(level=logging.INFO)
 
@@ -38,6 +38,7 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         num_resets: int = 3,
         fold_random_state: int = 275,
         verbose: int = 0,
+        stratification: bool = False,
     ) -> None:
         """
         Create FeatBoost estimator.
@@ -46,7 +47,10 @@ class FeatBoostEstimator(BaseEstimator, ABC):
             List can be of length 1 or 2, first estimator is used for ranking
             and second for evaluation.
         :param loss: loss function to use, supported function depends on estimator type.
-        :param metric: metric to use, supported metric depends on estimator type.
+        :param metric: metric to use, supported metric depends on estimator type. Supported metrics:
+            - Classification: ["acc", "f1"]
+            - Regression: ["mae"]
+            - Survival: ["c_index"]
         :param number_of_folds: number of k folds for cross-validation.
         :param epsilon: threshold to stop adding features.
         :param max_number_of_features: max number of features it will find.
@@ -58,7 +62,9 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         :param xgb_importance: XGB importance type.
         :param learning_rate: learning rate of softmax (applies to classification).
         :param num_resets: number of resets to perform at most.
+        :param fold_random_state: random state for stratified k-fold.
         :param verbose: whether to enable logging.
+        :param stratification: whether to enable stratification (only for classification or survival).
         """
         self.estimator = (
             estimators if isinstance(estimators, list) else [estimators, estimators]
@@ -82,6 +88,7 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         self.i = 1
         self.num_resets = num_resets
         self.fold_random_state = fold_random_state
+        self.stratification = stratification
 
         siso_size = (
             self.siso_ranking_size
@@ -371,7 +378,20 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         # Get a ranking of features based on the estimator.
         ranking, self.all_ranking_ = self._input_ranking(X, Y)
         self.siso_ranking_[(self.i - 1), :] = ranking
-        kf = StratifiedKFold(
+        if self.stratification:
+            kf_func = StratifiedKFold
+            if self.metric == "c_index":
+                stratification = Y[:, 1] == np.inf
+            elif self.metric in ["acc", "f1"]:
+                stratification = Y
+            else:
+                raise NotImplementedError(
+                    "Stratification is not supported for this metric."
+                )
+        else:
+            kf_func = KFold
+
+        kf = kf_func(
             n_splits=self.number_of_folds,
             shuffle=True,
             random_state=self.fold_random_state,
@@ -386,9 +406,6 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         metric = None
         metric_t_all = np.zeros((len(combs), 1))
         std_t_all = np.zeros((len(combs), 1))
-        censored = (
-            Y[:, 1] == np.inf if self.metric == "c_index" else np.zeros(Y.shape[0])
-        )
         for idx_1, i in enumerate(combs):
             self.logger.debug(
                 "...Evaluating SISO combination %02d which is %s" % (idx_1 + 1, str(i))
@@ -405,7 +422,12 @@ class FeatBoostEstimator(BaseEstimator, ABC):
             count = 1
             metric_t_folds = np.zeros((self.number_of_folds, 1))
             # Compute accuracy for each SISO input.
-            for train_index, test_index in kf.split(X_subset, censored):
+            kf_splits = (
+                kf.split(X_subset, stratification)
+                if self.stratification
+                else kf.split(X_subset)
+            )
+            for train_index, test_index in kf_splits:
                 X_train, X_test = X_subset[train_index], X_subset[test_index]
                 y_train, y_test = Y[train_index], Y[test_index]
 
@@ -455,18 +477,28 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         :return: accuracy of selected features.
         """
         warnings.filterwarnings("ignore")
-        kf = StratifiedKFold(
+        if self.stratification:
+            kf_func = StratifiedKFold
+            if self.metric == "c_index":
+                stratification = Y[:, 1] == np.inf
+            elif self.metric in ["acc", "f1"]:
+                stratification = Y
+            else:
+                raise NotImplementedError(
+                    "Stratification is not supported for this metric."
+                )
+        else:
+            kf_func = KFold
+
+        kf = kf_func(
             n_splits=self.number_of_folds,
             shuffle=True,
             random_state=self.fold_random_state,
         )
         metric_t_folds = np.zeros(self.number_of_folds)
-
-        censored = (
-            Y[:, 1] == np.inf if self.metric == "c_index" else np.zeros(Y.shape[0])
-        )
         # Compute the accuracy of the selected features one addition at a time.
-        for i, (train_index, test_index) in enumerate(kf.split(X, censored)):
+        kf_splits = kf.split(X, stratification) if self.stratification else kf.split(X)
+        for i, (train_index, test_index) in enumerate(kf_splits):
             X_train, X_test = X[train_index], X[test_index]
             y_train, y_test = Y[train_index], Y[test_index]
             self._fit_estimator(X_train, y_train, estimator_idx=1)

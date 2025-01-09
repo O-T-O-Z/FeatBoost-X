@@ -21,8 +21,8 @@ X_train, X_test, y_train, y_test = train_test_split(
 clf = FeatBoostRegressor(
     XGBRegressor(),
     metric="mae",
-    verbose=0,
-    siso_ranking_size=10,
+    verbose=2,
+    siso_ranking_size=100,
     max_number_of_features=2,
 )
 clf.fit(X_train, y_train)
