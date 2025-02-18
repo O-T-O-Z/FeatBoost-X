@@ -11,7 +11,7 @@ with open("requirements.txt") as f:
 
 setup(
     name="featboostx",
-    version="0.1.0",
+    version="0.1.0rc2",
     description="A Python package for the FeatBoost-X feature selection algorithm",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -27,6 +27,6 @@ setup(
     keywords="Feature Selection, Gradient Boosting, FeatBoost-X",
     package_dir={"featboostx": "featboostx"},
     packages=find_packages(include=["featboostx", "featboostx.*"]),
-    python_requires=">=3.11, <4",
+    python_requires=">=3.10, <4",
     install_requires=requirements,
 )

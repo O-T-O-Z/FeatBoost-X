@@ -1,6 +1,6 @@
-numpy==1.26.4
-shap==0.45.0
-lifelines==0.28.0
-pytest==8.3.3
-xgboost==2.0.3
-scipy==1.13
+numpy>=1.26,<2.0
+shap~=0.45
+lifelines>=0.26,<1.0
+pytest>=7.0,<8.0
+xgboost>=2.0,<3.0
+scipy>=1.13,<2.0

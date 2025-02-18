@@ -10,8 +10,6 @@ from typing import Any, List, Tuple
 
 import numpy as np
 import shap
-from shap.plots._force import AdditiveExplanation, convert_to_link, ensure_not_numpy
-from shap.utils._legacy import DenseData, Instance, Model
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import StratifiedKFold, KFold
 
@@ -39,6 +37,8 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         fold_random_state: int = 275,
         verbose: int = 0,
         stratification: bool = False,
+        use_shap: bool = True,
+        corr_check: bool = True,
     ) -> None:
         """
         Create FeatBoost estimator.
@@ -65,6 +65,8 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         :param fold_random_state: random state for stratified k-fold.
         :param verbose: whether to enable logging.
         :param stratification: whether to enable stratification (only for classification or survival).
+        :param use_shap: whether to use SHAP for feature importance.
+        :param corr_check: whether to check for correlation between features.
         """
         self.estimator = (
             estimators if isinstance(estimators, list) else [estimators, estimators]
@@ -89,6 +91,8 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         self.num_resets = num_resets
         self.fold_random_state = fold_random_state
         self.stratification = stratification
+        self.use_shap = use_shap
+        self.corr_check = corr_check
 
         siso_size = (
             self.siso_ranking_size
@@ -201,7 +205,6 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         :param feature_names: (optional) feature names.
         :param global_sample_weights: (optional) global sample weights.
         """
-        self.feature_importances_array_ = np.empty((0, X.shape[1]))
         self._feature_names = feature_names or [
             "x_%03d" % (i + 1) for i in range(len(X[0]))
         ]
@@ -232,6 +235,9 @@ class FeatBoostEstimator(BaseEstimator, ABC):
                 ) = self._check_stop_conditions(
                     stop_epsilon, repeated_variable, Y, reset_count
                 )
+                if self._all_selected_variables == []:
+                    self.selected_subset_ = []
+                    break
                 continue
 
             if reset_count >= self.num_resets:
@@ -250,6 +256,9 @@ class FeatBoostEstimator(BaseEstimator, ABC):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 selected_variable, _ = self._siso(X, Y)
+                if not selected_variable:
+                    self.selected_subset_ = self._all_selected_variables
+                    break
             self.logger.debug("Evaluating MISO after iteration %02d" % self.i)
             new_variables = [
                 x for x in selected_variable if x not in self._all_selected_variables
@@ -364,6 +373,47 @@ class FeatBoostEstimator(BaseEstimator, ABC):
 
         return stop_epsilon, repeated_variable, reset_count
 
+    def _corr_check_iteration(self, X: np.ndarray, ranking: List[int]) -> np.ndarray:
+        current_features = X[:, self._all_selected_variables]
+        other_features = X[:, ranking]
+        arr_coeff = np.corrcoef(current_features.T, other_features.T)[
+            : len(self._all_selected_variables),
+            len(self._all_selected_variables) :,  # noqa
+        ]
+        # find indices of features with correlation greater than 0.7
+        coeff_indices = np.where(np.abs(arr_coeff) > 0.7)[1]
+        highly_correlated = np.unique(coeff_indices)
+        # remove selected features from the list of highly correlated features
+        corr_indices = list(
+            np.setdiff1d(highly_correlated, self._all_selected_variables)
+        )
+        return [ranking[c] for c in corr_indices]
+
+    def _correlation_check(
+        self, X: np.ndarray, Y: np.ndarray, ranking: List[int]
+    ) -> np.ndarray:
+        highly_correlated = self._corr_check_iteration(X, ranking)
+        ranking = [r for r in ranking if r not in highly_correlated]
+        X_subset = X.copy()
+        while len(ranking) < self.siso_ranking_size:
+            self.logger.info(
+                f"Ranking size {len(ranking)} is less than siso_ranking_size {self.siso_ranking_size}"
+            )
+            use_features = [f for f in range(len(X[0])) if f not in highly_correlated]
+            # every iteration we remove the highly correlated features
+            X_subset = X[:, use_features]
+            # then we re-rank the features
+            ranking, self.all_ranking_ = self._input_ranking(X_subset, Y)
+            # translate the ranking back to the original features
+            ranking = [use_features[r] for r in ranking]
+            correlated_indices = self._corr_check_iteration(X, ranking)
+            highly_correlated.extend(correlated_indices)
+            if len(highly_correlated) == 0:
+                break
+            # we remove the highly correlated features from the ranking
+            ranking = [r for r in ranking if r not in highly_correlated]
+        return ranking
+
     def _siso(self, X: np.ndarray, Y: np.ndarray) -> Tuple[List[int], Any]:
         """
         Determine which feature to select.
@@ -377,7 +427,12 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         """
         # Get a ranking of features based on the estimator.
         ranking, self.all_ranking_ = self._input_ranking(X, Y)
-        self.siso_ranking_[(self.i - 1), :] = ranking
+        if len(ranking) == 0:
+            return [], 0
+
+        if self._all_selected_variables != [] and self.corr_check:
+            ranking = self._correlation_check(X, Y, ranking)
+
         if self.stratification:
             kf_func = StratifiedKFold
             if self.metric == "c_index":
@@ -531,19 +586,17 @@ class FeatBoostEstimator(BaseEstimator, ABC):
                 fscore = self.estimator[0].get_feature_importances(  # type: ignore
                     importance_type=self.xgb_importance
                 )
+            elif self.use_shap:
+                feature_importance = self._get_shap_importance(X, Y)  # type: ignore
             else:
+                feature_importance = np.zeros(X.shape[1])
                 fscore = (
                     self.estimator[0]
                     .get_booster()  # type: ignore
                     .get_score(importance_type=self.xgb_importance)
                 )
-            feature_importance = np.zeros(X.shape[1])
-            self.feature_importances_array_ = np.vstack(
-                (self.feature_importances_array_, feature_importance)
-            )
-            # feature_importance = self._get_shap_importance(X, Y)  # type: ignore
-            for k, v in fscore.items():
-                feature_importance[int(k[1:])] = v
+                for k, v in fscore.items():
+                    feature_importance[int(k[1:])] = v
         else:
             self._fit_estimator(
                 np.nan_to_num(X),
@@ -562,44 +615,15 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         :param Y: training labels.
         """
         explainer = shap.TreeExplainer(self.estimator[0])
-        shap_values = explainer.shap_values(X)
-        feature_names = [str(i) for i in range(1, X.shape[1] + 1)]
-        exps = []
-        for k in range(shap_values.shape[0]):
-            if feature_names is None:
-                feature_names = [
-                    "Feature %s" % str(i) for i in range(shap_values.shape[1])
-                ]
-            display_features = X[k, :]
+        shap_values = explainer.shap_values(X, check_additivity=False)
+        shap_values = np.abs(shap_values)
+        feature_importance = np.mean(shap_values, axis=0)
+        feature_names = [f"f{i}" for i in range(X.shape[1])]
+        fscore = np.zeros(X.shape[1])
+        for k, v in zip(feature_names, feature_importance):
+            fscore[int(k[1:])] = v
 
-            instance = Instance(np.ones((1, len(feature_names))), display_features)
-            base_value = explainer.expected_value
-            e = AdditiveExplanation(
-                base_value,
-                np.sum(shap_values[k, :]) + base_value,
-                shap_values[k, :],
-                None,
-                instance,
-                convert_to_link("identity"),
-                Model(None, None),
-                DenseData(np.ones((1, len(feature_names))), list(feature_names)),
-            )
-            exps.append(e)
-        feature_values = np.zeros((len(exps), len(exps[0].effects)))
-        for e_idx, e in enumerate(exps):
-            features = []
-            for i in range(len(e.data.group_names)):
-                if e.effects[i] == 0:
-                    features.append(0)
-                    continue
-                features.append(ensure_not_numpy(e.instance.group_display_values[i]))
-            feature_values[e_idx, :] = features
-        feature_values = np.mean(np.abs(feature_values), axis=0)
-
-        feature_importance = np.zeros(X.shape[1])
-        for i, v in enumerate(feature_values):
-            feature_importance[i] = v
-        return feature_importance
+        return fscore
 
     def __init_weights(self, Y: np.ndarray) -> None:
         """
@@ -610,19 +634,6 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         shape = Y.shape[0] if len(Y.shape) > 1 else Y.shape
         self._global_sample_weights = np.ones(shape)
         self.residual_weights_ = np.zeros((self.max_number_of_features, len(Y)))
-        if isinstance(self.siso_ranking_size, int):
-            self.siso_ranking_ = 99 * np.ones(
-                (self.max_number_of_features, self.siso_ranking_size)
-            )
-        elif isinstance(self.siso_ranking_size, list):
-            assert (
-                len(self.siso_ranking_size) == 2
-            ), "siso_ranking_size of list type is of incompatible format.\
-                  Please enter a list of the following type: \n \
-                      siso_ranking_size=[5, 10] \n Read documentation for more details."
-            self.siso_ranking_ = 99 * np.ones(
-                (self.max_number_of_features, self.siso_ranking_size[0])
-            )
 
     def __first_iteration(self, X: np.ndarray, Y: np.ndarray) -> None:
         """
@@ -636,6 +647,8 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             selected_variable, _ = self._siso(X, Y)
+            if selected_variable == []:
+                return
         self.logger.debug("Evaluating MISO after iteration %02d" % self.i)
         # The selected feature is stored inside self._all_selected_variables.
         self._all_selected_variables.extend(selected_variable)
@@ -669,9 +682,19 @@ class FeatBoostEstimator(BaseEstimator, ABC):
 
     def __return_ranking(self, feature_importance: np.ndarray) -> Tuple[Any, Any]:
         feature_rank = np.argsort(feature_importance)
+        # remover all features with zero importance
+        feature_rank = feature_rank[feature_importance[feature_rank] > 0]
         all_ranking = feature_rank[::-1]
+        if len(all_ranking) == 0:
+            self.logger.debug("No features with non-zero importance.")
+            return [], all_ranking
         self.logger.debug("feature importances of all available features:")
         if isinstance(self.siso_ranking_size, int):
+            self.siso_ranking_size = (
+                self.siso_ranking_size
+                if self.siso_ranking_size < len(feature_rank)
+                else len(feature_rank)
+            )
             for i in range(-1, -1 * self.siso_ranking_size - 1, -1):
                 self.logger.debug(
                     "%s   %05f"

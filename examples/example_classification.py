@@ -9,8 +9,8 @@ from featboostx import FeatBoostClassifier
 
 start_time = time.time()
 X, y = make_classification(
-    n_samples=10000,
-    n_features=100,
+    n_samples=1000,
+    n_features=10000,
     n_informative=2,
     n_redundant=0,
     random_state=0,
@@ -22,9 +22,11 @@ X_train, X_test, y_train, y_test = train_test_split(
 clf = FeatBoostClassifier(
     XGBClassifier(),
     loss="softmax",
-    verbose=0,
+    verbose=2,
     siso_ranking_size=100,
-    max_number_of_features=2,
+    max_number_of_features=10,
+    num_resets=1,
+    # use_shap=True,
 )
 clf.fit(X_train, y_train)
 print(clf.selected_subset_)
