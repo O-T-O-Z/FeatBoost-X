@@ -75,6 +75,7 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         self.epsilon = epsilon
         self.max_number_of_features = max_number_of_features
         self.siso_ranking_size = siso_ranking_size
+        self.original_ranking_size = siso_ranking_size
         self.siso_order = siso_order
         self.loss = loss
         self.reset = reset
@@ -691,8 +692,8 @@ class FeatBoostEstimator(BaseEstimator, ABC):
         self.logger.debug("feature importances of all available features:")
         if isinstance(self.siso_ranking_size, int):
             self.siso_ranking_size = (
-                self.siso_ranking_size
-                if self.siso_ranking_size < len(feature_rank)
+                self.original_ranking_size
+                if self.original_ranking_size < len(feature_rank)
                 else len(feature_rank)
             )
             for i in range(-1, -1 * self.siso_ranking_size - 1, -1):

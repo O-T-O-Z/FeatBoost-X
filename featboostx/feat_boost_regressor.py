@@ -1,11 +1,10 @@
 from collections import Counter
-from typing import Any, List, Tuple
+from typing import Any
 
 import numpy as np
 from lifelines.utils import concordance_index
 from sklearn.base import BaseEstimator
 from sklearn.metrics import mean_absolute_error
-
 from featboostx import FeatBoostEstimator
 
 
@@ -198,75 +197,50 @@ class FeatBoostRegressor(FeatBoostEstimator):
             y_pred = -y_pred
         return concordance_index(event_times, y_pred, event_observed)
 
-    def _c_index_concordant(
-        self, y_test: np.ndarray, y_pred: np.ndarray
-    ) -> Tuple[float, List[Tuple], List[Tuple]]:
-        """
-        Calculate C-index using same method as lifelines but return pairs as well.
+    def _c_index_concordant(self, y_test: np.ndarray, y_pred: np.ndarray):
+        t = y_test[:, 0]
+        e = (y_test[:, 0] == y_test[:, 1]).astype(int)
+        p = y_pred
+        # Shape: [n, n], where n is the number of samples
+        # t_[i,j] is positive if i lives more than j
+        # t_[i,j] is negative if i lives less than j
+        # t_[i,j] = 0 if i and j die at the same time
+        t_ = t[np.newaxis] - t[:, np.newaxis]
 
-        :param y_test: true labels.
-        :param y_pred: predicted labels.
-        :return: the C-index, concordant pairs, and discordant pairs.
-        """
-        event_times = y_test[:, 0]
-        event_observed = (y_test[:, 0] == y_test[:, 1]).astype(int)
-        concordant = 0
-        discordant = 0
-        tied = 0
-        concordant_pairs = []
-        discordant_pairs = []
-        for i in range(len(event_times)):
-            for j in range(len(event_times)):
-                if i == j or (event_observed[i] == 0 and event_observed[j] == 0):
-                    continue
-                if event_observed[i] == 1 and event_observed[j] == 1:
-                    if event_times[i] < event_times[j]:
-                        if y_pred[i] < y_pred[j]:
-                            concordant += 1
-                            concordant_pairs.append((i, j))
-                        elif y_pred[i] > y_pred[j]:
-                            discordant += 1
-                            discordant_pairs.append((i, j))
-                        else:
-                            tied += 1
-                    elif event_times[i] > event_times[j]:
-                        if y_pred[i] > y_pred[j]:
-                            concordant += 1
-                            concordant_pairs.append((i, j))
-                        elif y_pred[i] < y_pred[j]:
-                            discordant += 1
-                            discordant_pairs.append((i, j))
-                        else:
-                            tied += 1
-                elif event_observed[i] == 1 and event_observed[j] == 0:
-                    if event_times[i] < event_times[j]:
-                        if y_pred[i] < y_pred[j]:
-                            concordant += 1
-                            concordant_pairs.append((i, j))
-                        elif y_pred[i] > y_pred[j]:
-                            discordant += 1
-                            discordant_pairs.append((i, j))
-                        elif y_pred[i] == y_pred[j]:
-                            tied += 1
-                    elif event_times[i] > event_times[j]:
-                        # we dont know if this is concordant or discordant
-                        continue
-                elif event_observed[i] == 0 and event_observed[j] == 1:
-                    if event_times[j] < event_times[i]:
-                        if y_pred[j] < y_pred[i]:
-                            concordant += 1
-                            concordant_pairs.append((i, j))
-                        elif y_pred[j] > y_pred[i]:
-                            discordant += 1
-                            discordant_pairs.append((i, j))
-                        elif y_pred[i] == y_pred[j]:
-                            tied += 1
-                    elif event_times[j] > event_times[i]:
-                        # we dont know if this is concordant or discordant
-                        continue
+        # Do the same for the risk scores
+        p_ = p[np.newaxis] - p[:, np.newaxis]
 
-        return (
-            (concordant + 0.5 * tied) / (concordant + tied + discordant),
-            concordant_pairs,
-            discordant_pairs,
+        # Concordant pairs are all of the pairs (i,j) where
+        # t[i]>t[j] and p[i]>p[j] and j is uncensored
+        # OR
+        # t[i]<t[j] and p[i]<p[j] and i is uncensored
+        concordant = np.stack(
+            (
+                ((t_ > 0) & (p_ > 0) & e[:, np.newaxis])
+                | ((t_ < 0) & (p_ < 0) & e[np.newaxis])
+            ).nonzero(),
+            axis=1,
         )
+
+        # Apply the same logic for discordant pairs
+        discordant = np.stack(
+            (
+                ((t_ > 0) & (p_ < 0) & e[:, np.newaxis])
+                | ((t_ < 0) & (p_ > 0) & e[np.newaxis])
+            ).nonzero(),
+            axis=1,
+        )
+
+        # Apply the same logic for tied pairs
+        tied = np.stack(
+            (
+                ((t_ > 0) & (p_ == 0) & e[:, np.newaxis])
+                | ((t_ < 0) & (p_ == 0) & e[np.newaxis])
+            ).nonzero(),
+            axis=1,
+        )
+
+        c_index = (len(concordant) + 0.5 * len(tied)) / (
+            len(concordant) + len(tied) + len(discordant)
+        )
+        return c_index, concordant, discordant
